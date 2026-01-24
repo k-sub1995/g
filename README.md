@@ -31,7 +31,7 @@ The official Gemini CLI is an **amazing tool** with excellent MCP support and se
 **gmn** reimplements the core functionality in Go, achieving **37x faster startup** while maintaining full compatibility with the official CLI's authentication.
 
 ```
-$ time gmn -p "hi" > /dev/null
+$ time gmn "hi" > /dev/null
 0.02s user 0.01s system
 
 $ time gemini -p "hi" > /dev/null
@@ -68,29 +68,29 @@ gmn reuses these credentials automatically from `~/.gemini/`
 
 ```bash
 # Simple prompt
-gmn -p "Explain quantum computing"
+gmn "Explain quantum computing"
 
 # With file context
-gmn -f main.go -p "Review this code"
+gmn "Review this code" -f main.go
 
 # Pipe input
-cat error.log | gmn -p "What's wrong?"
+cat error.log | gmn "What's wrong?"
 
 # JSON output
-gmn -o json -p "List 3 colors"
+gmn "List 3 colors" -o json
 
 # Use different model
-gmn -m gemini-2.5-pro -p "Write a poem"
+gmn "Write a poem" -m gemini-2.5-pro
 ```
 
 ## 📋 Usage
 
 ```
-gmn [flags]
+gmn [prompt] [flags]
 gmn mcp <command>
 
 Flags:
-  -p, --prompt string          Prompt to send (required)
+  -p, --prompt string          Prompt (alternative to positional arg)
   -m, --model string           Model (default "gemini-2.5-flash")
   -f, --file strings           Files to include
   -o, --output-format string   text, json, stream-json (default "text")

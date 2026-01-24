@@ -31,19 +31,20 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gmn",
+	Use:   "gmn [prompt]",
 	Short: "A lightweight, non-interactive Gemini CLI",
 	Long: `gmn is a lightweight reimplementation of Google's Gemini CLI
 focused on non-interactive use cases. It reuses authentication from
 the official Gemini CLI (~/.gemini/).
 
 Examples:
-  gmn -p "Hello, world"
-  gmn -m gemini-2.5-pro -p "Explain Go generics"
-  cat file.go | gmn -p "Review this code"
-  gmn -f main.go -p "Add error handling"`,
+  gmn "Hello, world"
+  gmn "Explain Go generics" -m gemini-2.5-pro
+  cat file.go | gmn "Review this code"
+  gmn "Add error handling" -f main.go`,
 	RunE:    run,
 	Version: version,
+	Args:    cobra.MaximumNArgs(1),
 }
 
 func init() {
@@ -54,7 +55,6 @@ func init() {
 	rootCmd.Flags().DurationVarP(&timeout, "timeout", "t", 5*time.Minute, "API timeout")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug output")
 
-	rootCmd.MarkFlagRequired("prompt")
 }
 
 // Execute runs the root command
@@ -69,6 +69,10 @@ func SetVersion(v string) {
 }
 
 func run(cmd *cobra.Command, args []string) error {
+	// Handle positional argument as prompt
+	if len(args) > 0 {
+		prompt = args[0]
+	}
 	// Setup context with timeout and signal handling
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
