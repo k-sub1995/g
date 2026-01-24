@@ -9,8 +9,6 @@
   <img src="https://img.shields.io/github/actions/workflow/status/tomohiro-owada/gmn/ci.yml?style=for-the-badge&label=CI" alt="CI">
 </p>
 
-<h1 align="center">gmn</h1>
-
 <p align="center">
   <strong>A lightweight, non-interactive Gemini CLI written in Go</strong><br>
   <em>A love letter to <a href="https://github.com/google-gemini/gemini-cli">Google's Gemini CLI</a></em>
