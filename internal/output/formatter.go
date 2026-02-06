@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/acarl005/stripansi"
 	"github.com/tomohiro-owada/gmn/internal/api"
 )
 
@@ -19,28 +20,37 @@ type Formatter interface {
 }
 
 // NewFormatter creates a formatter for the given format
-func NewFormatter(format string, w io.Writer, errW io.Writer) (Formatter, error) {
+func NewFormatter(format string, w io.Writer, errW io.Writer, sanitize bool) (Formatter, error) {
 	switch format {
 	case "text":
-		return &TextFormatter{w: w, errW: errW}, nil
+		return &TextFormatter{w: w, errW: errW, sanitize: sanitize}, nil
 	case "json":
-		return &JSONFormatter{w: w, errW: errW}, nil
+		return &JSONFormatter{w: w, errW: errW, sanitize: sanitize}, nil
 	case "stream-json":
-		return &StreamJSONFormatter{w: w, errW: errW}, nil
+		return &StreamJSONFormatter{w: w, errW: errW, sanitize: sanitize}, nil
 	default:
 		return nil, fmt.Errorf("unknown output format: %s", format)
 	}
 }
 
+// sanitizeText strips ANSI escape sequences from text if sanitization is enabled
+func sanitizeText(text string, sanitize bool) string {
+	if sanitize {
+		return stripansi.Strip(text)
+	}
+	return text
+}
+
 // TextFormatter outputs plain text (streaming)
 type TextFormatter struct {
-	w    io.Writer
-	errW io.Writer
+	w        io.Writer
+	errW     io.Writer
+	sanitize bool
 }
 
 func (f *TextFormatter) WriteResponse(resp *api.GenerateResponse) error {
 	if len(resp.Response.Candidates) > 0 && len(resp.Response.Candidates[0].Content.Parts) > 0 {
-		text := resp.Response.Candidates[0].Content.Parts[0].Text
+		text := sanitizeText(resp.Response.Candidates[0].Content.Parts[0].Text, f.sanitize)
 		_, err := fmt.Fprintln(f.w, text)
 		return err
 	}
@@ -49,7 +59,8 @@ func (f *TextFormatter) WriteResponse(resp *api.GenerateResponse) error {
 
 func (f *TextFormatter) WriteStreamEvent(event *api.StreamEvent) error {
 	if event.Text != "" {
-		_, err := fmt.Fprint(f.w, event.Text)
+		text := sanitizeText(event.Text, f.sanitize)
+		_, err := fmt.Fprint(f.w, text)
 		return err
 	}
 	if event.Type == "done" {
@@ -67,8 +78,9 @@ func (f *TextFormatter) WriteError(err error) error {
 
 // JSONFormatter outputs structured JSON (non-streaming)
 type JSONFormatter struct {
-	w    io.Writer
-	errW io.Writer
+	w        io.Writer
+	errW     io.Writer
+	sanitize bool
 }
 
 // JSONResponse is the JSON output structure
@@ -94,7 +106,7 @@ func (f *JSONFormatter) WriteResponse(resp *api.GenerateResponse) error {
 	if len(resp.Response.Candidates) > 0 {
 		out.FinishReason = resp.Response.Candidates[0].FinishReason
 		if len(resp.Response.Candidates[0].Content.Parts) > 0 {
-			out.Response = resp.Response.Candidates[0].Content.Parts[0].Text
+			out.Response = sanitizeText(resp.Response.Candidates[0].Content.Parts[0].Text, f.sanitize)
 		}
 	}
 
@@ -119,8 +131,9 @@ func (f *JSONFormatter) WriteError(err error) error {
 
 // StreamJSONFormatter outputs NDJSON (streaming)
 type StreamJSONFormatter struct {
-	w    io.Writer
-	errW io.Writer
+	w        io.Writer
+	errW     io.Writer
+	sanitize bool
 }
 
 func (f *StreamJSONFormatter) WriteResponse(resp *api.GenerateResponse) error {
@@ -129,7 +142,11 @@ func (f *StreamJSONFormatter) WriteResponse(resp *api.GenerateResponse) error {
 }
 
 func (f *StreamJSONFormatter) WriteStreamEvent(event *api.StreamEvent) error {
-	data, err := json.Marshal(event)
+	e := *event
+	if e.Text != "" {
+		e.Text = sanitizeText(e.Text, f.sanitize)
+	}
+	data, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}

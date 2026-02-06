@@ -186,6 +186,7 @@ type ClientMetadata struct {
 // LoadCodeAssistResponse is the response from loadCodeAssist
 type LoadCodeAssistResponse struct {
 	CurrentTier             *UserTier        `json:"currentTier,omitempty"`
+	AllowedTiers            []UserTier       `json:"allowedTiers,omitempty"`
 	IneligibleTiers         []IneligibleTier `json:"ineligibleTiers,omitempty"`
 	CloudAICompanionProject string           `json:"cloudaicompanionProject,omitempty"`
 }

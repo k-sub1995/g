@@ -23,12 +23,14 @@ import (
 var (
 	version = "dev"
 
-	prompt       string
-	model        string
-	outputFormat string
-	files        []string
-	timeout      time.Duration
-	debug        bool
+	prompt              string
+	model               string
+	outputFormat        string
+	files               []string
+	timeout             time.Duration
+	debug               bool
+	rawOutput           bool
+	acceptRawOutputRisk bool
 )
 
 var rootCmd = &cobra.Command{
@@ -55,7 +57,8 @@ func init() {
 	rootCmd.Flags().StringArrayVarP(&files, "file", "f", nil, "Files to include in context")
 	rootCmd.Flags().DurationVarP(&timeout, "timeout", "t", 5*time.Minute, "API timeout")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug output")
-
+	rootCmd.Flags().BoolVar(&rawOutput, "raw-output", false, "Disable sanitization of model output (allow ANSI escape sequences)")
+	rootCmd.Flags().BoolVar(&acceptRawOutputRisk, "accept-raw-output-risk", false, "Suppress security warning when using --raw-output")
 }
 
 // Execute runs the root command
@@ -85,8 +88,14 @@ func run(cmd *cobra.Command, args []string) error {
 		cancel()
 	}()
 
+	// Upstream ref: 799007354 - sanitize ANSI escape sequences in non-interactive output
+	sanitize := !rawOutput && !acceptRawOutputRisk
+	if rawOutput && !acceptRawOutputRisk && outputFormat == "text" {
+		fmt.Fprintln(os.Stderr, "[WARNING] --raw-output is enabled. Model output is not sanitized and may contain harmful ANSI sequences (e.g. for phishing or command injection). Use --accept-raw-output-risk to suppress this warning.")
+	}
+
 	// Create formatter
-	formatter, err := output.NewFormatter(outputFormat, os.Stdout, os.Stderr)
+	formatter, err := output.NewFormatter(outputFormat, os.Stdout, os.Stderr, sanitize)
 	if err != nil {
 		return err
 	}
@@ -157,19 +166,26 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 		projectID = loadResp.CloudAICompanionProject
 
-		// If no project ID and we have ineligible tier info, show helpful message
-		if projectID == "" && len(loadResp.IneligibleTiers) > 0 {
-			var reasons []string
-			for _, tier := range loadResp.IneligibleTiers {
-				if tier.ReasonMessage != "" {
-					reasons = append(reasons, tier.ReasonMessage)
+		// Upstream ref: f4e73191d - fix tier eligibility for unlicensed users
+		// If no project ID, check ineligible tier info for helpful messages.
+		// Even if currentTier exists, missing projectID means the user is not set up.
+		if projectID == "" {
+			if len(loadResp.IneligibleTiers) > 0 {
+				var reasons []string
+				for _, tier := range loadResp.IneligibleTiers {
+					if tier.ReasonMessage != "" {
+						reasons = append(reasons, tier.ReasonMessage)
+					}
+				}
+				if len(reasons) > 0 {
+					errMsg := fmt.Errorf("unable to use Gemini: %s", strings.Join(reasons, ", "))
+					formatter.WriteError(errMsg)
+					return errMsg
 				}
 			}
-			if len(reasons) > 0 {
-				errMsg := fmt.Errorf("unable to use Gemini: %s", strings.Join(reasons, ", "))
-				formatter.WriteError(errMsg)
-				return errMsg
-			}
+			errMsg := fmt.Errorf("unable to use Gemini: no project ID available. Please run 'gemini' to set up your account")
+			formatter.WriteError(errMsg)
+			return errMsg
 		}
 
 		// Cache the project ID for next time
