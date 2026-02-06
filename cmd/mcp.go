@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tomohiro-owada/gmn/internal/config"
+	"github.com/tomohiro-owada/gmn/internal/extension"
 	"github.com/tomohiro-owada/gmn/internal/mcp"
 )
 
@@ -39,15 +40,29 @@ func init() {
 	mcpCmd.AddCommand(mcpCallCmd)
 }
 
+func mergeExtensionMCPServers(cfg *config.Config) {
+	cwd, _ := os.Getwd()
+	extensions, _ := extension.LoadAll(cwd)
+	for _, ext := range extensions {
+		for serverName, serverCfg := range ext.MCPServers {
+			if _, exists := cfg.MCPServers[serverName]; !exists {
+				cfg.MCPServers[serverName] = serverCfg
+			}
+		}
+	}
+}
+
 func runMCPList(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	mergeExtensionMCPServers(cfg)
+
 	if len(cfg.MCPServers) == 0 {
 		fmt.Println("No MCP servers configured.")
-		fmt.Println("Add servers to ~/.gemini/settings.json under 'mcpServers'")
+		fmt.Println("Add servers to ~/.gemini/settings.json under 'mcpServers' or install extensions")
 		return nil
 	}
 
@@ -61,7 +76,7 @@ func runMCPList(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		client, err := mcp.NewClient(serverCfg.Command, serverCfg.Args, serverCfg.Env)
+		client, err := mcp.NewClient(serverCfg.Command, serverCfg.Args, serverCfg.Env, serverCfg.CWD)
 		if err != nil {
 			fmt.Printf("  Error: %v\n\n", err)
 			continue
@@ -114,9 +129,11 @@ func runMCPCall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	mergeExtensionMCPServers(cfg)
+
 	serverCfg, ok := cfg.MCPServers[serverName]
 	if !ok {
-		return fmt.Errorf("MCP server '%s' not found in config", serverName)
+		return fmt.Errorf("MCP server '%s' not found in config or extensions", serverName)
 	}
 
 	if serverCfg.Command == "" {
@@ -125,7 +142,7 @@ func runMCPCall(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 
-	client, err := mcp.NewClient(serverCfg.Command, serverCfg.Args, serverCfg.Env)
+	client, err := mcp.NewClient(serverCfg.Command, serverCfg.Args, serverCfg.Env, serverCfg.CWD)
 	if err != nil {
 		return fmt.Errorf("failed to start MCP server: %w", err)
 	}

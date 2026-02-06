@@ -18,6 +18,7 @@ import (
 	"github.com/tomohiro-owada/gmn/internal/api"
 	"github.com/tomohiro-owada/gmn/internal/auth"
 	"github.com/tomohiro-owada/gmn/internal/config"
+	"github.com/tomohiro-owada/gmn/internal/extension"
 	"github.com/tomohiro-owada/gmn/internal/input"
 	"github.com/tomohiro-owada/gmn/internal/mcp"
 	"github.com/tomohiro-owada/gmn/internal/output"
@@ -274,6 +275,26 @@ func run(cmd *cobra.Command, args []string) error {
 			return text, sources, nil
 		}
 
+		// Load extensions and merge MCP servers
+		extensions, extErr := extension.LoadAll(workDir)
+		if extErr != nil && debug {
+			fmt.Fprintf(os.Stderr, "[ext] failed to load extensions: %v\n", extErr)
+		}
+		if cfg != nil {
+			for _, ext := range extensions {
+				for serverName, serverCfg := range ext.MCPServers {
+					if _, exists := cfg.MCPServers[serverName]; !exists {
+						cfg.MCPServers[serverName] = serverCfg
+						if debug {
+							fmt.Fprintf(os.Stderr, "[ext] loaded MCP server %q from extension %q\n", serverName, ext.Name)
+						}
+					} else if debug {
+						fmt.Fprintf(os.Stderr, "[ext] MCP server %q from extension %q skipped (already configured)\n", serverName, ext.Name)
+					}
+				}
+			}
+		}
+
 		// Create tool registry
 		registry := tools.NewRegistry(tools.RegistryOptions{
 			WorkDir:     workDir,
@@ -292,7 +313,7 @@ func run(cmd *cobra.Command, args []string) error {
 				if serverCfg.Command == "" {
 					continue // Skip HTTP/SSE (not yet supported)
 				}
-				client, err := mcp.NewClient(serverCfg.Command, serverCfg.Args, serverCfg.Env)
+				client, err := mcp.NewClient(serverCfg.Command, serverCfg.Args, serverCfg.Env, serverCfg.CWD)
 				if err != nil {
 					if debug {
 						fmt.Fprintf(os.Stderr, "[mcp] failed to create client for %s: %v\n", serverName, err)
@@ -324,9 +345,16 @@ func run(cmd *cobra.Command, args []string) error {
 			}
 		}
 
+		// Collect extension context files
+		var extContextFiles []string
+		for _, ext := range extensions {
+			extContextFiles = append(extContextFiles, ext.ContextFiles...)
+		}
+
 		// Set system instruction
 		req.Request.SystemInstruction = prompt.BuildSystemInstruction(prompt.Options{
-			WorkDir: workDir,
+			WorkDir:           workDir,
+			ExtensionContexts: extContextFiles,
 		})
 
 		// Set tools

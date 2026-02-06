@@ -19,8 +19,9 @@ import (
 
 // Options configures system prompt generation.
 type Options struct {
-	WorkDir string
-	Shell   string
+	WorkDir           string
+	Shell             string
+	ExtensionContexts []string // absolute paths to extension context files
 }
 
 // BuildSystemInstruction constructs the system prompt following gemini-cli patterns.
@@ -42,6 +43,14 @@ func BuildSystemInstruction(opts Options) *api.Content {
 	// Load user memory
 	if memory := loadUserMemory(opts.WorkDir); memory != "" {
 		sections = append(sections, "---\n\n"+memory)
+	}
+
+	// Load extension context files
+	for _, ctxFile := range opts.ExtensionContexts {
+		data, err := os.ReadFile(ctxFile)
+		if err == nil && len(data) > 0 {
+			sections = append(sections, "---\n\n"+strings.TrimSpace(string(data)))
+		}
 	}
 
 	prompt := strings.Join(sections, "\n\n")
