@@ -17,6 +17,8 @@ type Formatter interface {
 	WriteResponse(resp *api.GenerateResponse) error
 	WriteStreamEvent(event *api.StreamEvent) error
 	WriteError(err error) error
+	WriteToolCall(name string, args map[string]interface{}) error
+	WriteToolResult(name string, result map[string]interface{}, isError bool) error
 }
 
 // NewFormatter creates a formatter for the given format
@@ -76,6 +78,21 @@ func (f *TextFormatter) WriteError(err error) error {
 	return writeErr
 }
 
+func (f *TextFormatter) WriteToolCall(name string, args map[string]interface{}) error {
+	_, err := fmt.Fprintf(f.errW, "⚡ %s\n", name)
+	return err
+}
+
+func (f *TextFormatter) WriteToolResult(name string, result map[string]interface{}, isError bool) error {
+	if isError {
+		if errMsg, ok := result["error"]; ok {
+			_, err := fmt.Fprintf(f.errW, "✗ %s: %v\n", name, errMsg)
+			return err
+		}
+	}
+	return nil
+}
+
 // JSONFormatter outputs structured JSON (non-streaming)
 type JSONFormatter struct {
 	w        io.Writer
@@ -129,6 +146,14 @@ func (f *JSONFormatter) WriteError(err error) error {
 	return enc.Encode(out)
 }
 
+func (f *JSONFormatter) WriteToolCall(name string, args map[string]interface{}) error {
+	return nil // JSON formatter doesn't show intermediate tool calls
+}
+
+func (f *JSONFormatter) WriteToolResult(name string, result map[string]interface{}, isError bool) error {
+	return nil // JSON formatter doesn't show intermediate tool results
+}
+
 // StreamJSONFormatter outputs NDJSON (streaming)
 type StreamJSONFormatter struct {
 	w        io.Writer
@@ -159,4 +184,33 @@ func (f *StreamJSONFormatter) WriteError(err error) error {
 	data, _ := json.Marshal(event)
 	_, writeErr := f.errW.Write(append(data, '\n'))
 	return writeErr
+}
+
+func (f *StreamJSONFormatter) WriteToolCall(name string, args map[string]interface{}) error {
+	event := map[string]interface{}{
+		"type": "tool_call",
+		"name": name,
+		"args": args,
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	_, err = f.w.Write(append(data, '\n'))
+	return err
+}
+
+func (f *StreamJSONFormatter) WriteToolResult(name string, result map[string]interface{}, isError bool) error {
+	event := map[string]interface{}{
+		"type":     "tool_result",
+		"name":     name,
+		"result":   result,
+		"is_error": isError,
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	_, err = f.w.Write(append(data, '\n'))
+	return err
 }

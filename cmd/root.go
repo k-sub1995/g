@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,17 +14,21 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tomohiro-owada/gmn/internal/agent"
 	"github.com/tomohiro-owada/gmn/internal/api"
 	"github.com/tomohiro-owada/gmn/internal/auth"
 	"github.com/tomohiro-owada/gmn/internal/config"
 	"github.com/tomohiro-owada/gmn/internal/input"
+	"github.com/tomohiro-owada/gmn/internal/mcp"
 	"github.com/tomohiro-owada/gmn/internal/output"
+	"github.com/tomohiro-owada/gmn/internal/prompt"
+	"github.com/tomohiro-owada/gmn/internal/tools"
 )
 
 var (
 	version = "dev"
 
-	prompt              string
+	prompt_             string
 	model               string
 	outputFormat        string
 	files               []string
@@ -31,6 +36,10 @@ var (
 	debug               bool
 	rawOutput           bool
 	acceptRawOutputRisk bool
+	maxTurns            int
+	yolo                bool
+	sandbox             bool
+	noAgent             bool
 )
 
 var rootCmd = &cobra.Command{
@@ -44,14 +53,15 @@ Examples:
   gmn "Hello, world"
   gmn "Explain Go generics" -m gemini-2.5-pro
   cat file.go | gmn "Review this code"
-  gmn "Add error handling" -f main.go`,
+  gmn "Add error handling" -f main.go
+  gmn "Fix the tests" --yolo`,
 	RunE:    run,
 	Version: version,
 	Args:    cobra.MaximumNArgs(1),
 }
 
 func init() {
-	rootCmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Prompt to send to Gemini (required)")
+	rootCmd.Flags().StringVarP(&prompt_, "prompt", "p", "", "Prompt to send to Gemini (required)")
 	rootCmd.Flags().StringVarP(&model, "model", "m", "gemini-2.5-flash", "Model to use")
 	rootCmd.Flags().StringVarP(&outputFormat, "output-format", "o", "text", "Output format: text, json, stream-json")
 	rootCmd.Flags().StringArrayVarP(&files, "file", "f", nil, "Files to include in context")
@@ -59,6 +69,10 @@ func init() {
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug output")
 	rootCmd.Flags().BoolVar(&rawOutput, "raw-output", false, "Disable sanitization of model output (allow ANSI escape sequences)")
 	rootCmd.Flags().BoolVar(&acceptRawOutputRisk, "accept-raw-output-risk", false, "Suppress security warning when using --raw-output")
+	rootCmd.Flags().IntVar(&maxTurns, "max-turns", 25, "Maximum agent loop turns")
+	rootCmd.Flags().BoolVar(&yolo, "yolo", false, "Auto-approve shell commands (no confirmation)")
+	rootCmd.Flags().BoolVar(&sandbox, "sandbox", false, "Restrict file writes to working directory")
+	rootCmd.Flags().BoolVar(&noAgent, "no-agent", false, "Disable agent mode (single-turn, no tools)")
 }
 
 // Execute runs the root command
@@ -75,7 +89,7 @@ func SetVersion(v string) {
 func run(cmd *cobra.Command, args []string) error {
 	// Handle positional argument as prompt
 	if len(args) > 0 {
-		prompt = args[0]
+		prompt_ = args[0]
 	}
 	// Setup context with timeout and signal handling
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -106,7 +120,6 @@ func run(cmd *cobra.Command, args []string) error {
 		formatter.WriteError(fmt.Errorf("failed to load config: %w", err))
 		return err
 	}
-	_ = cfg // Will be used for MCP
 
 	// Load credentials
 	authMgr, err := auth.NewManager()
@@ -134,7 +147,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Prepare input
-	inputText, err := input.PrepareInput(prompt, files)
+	inputText, err := input.PrepareInput(prompt_, files)
 	if err != nil {
 		formatter.WriteError(err)
 		return err
@@ -167,8 +180,6 @@ func run(cmd *cobra.Command, args []string) error {
 		projectID = loadResp.CloudAICompanionProject
 
 		// Upstream ref: f4e73191d - fix tier eligibility for unlicensed users
-		// If no project ID, check ineligible tier info for helpful messages.
-		// Even if currentTier exists, missing projectID means the user is not set up.
 		if projectID == "" {
 			if len(loadResp.IneligibleTiers) > 0 {
 				var reasons []string
@@ -211,6 +222,9 @@ func run(cmd *cobra.Command, args []string) error {
 	// Generate a simple user prompt ID
 	userPromptID := fmt.Sprintf("gmn-%d", time.Now().UnixNano())
 
+	// Get working directory
+	workDir, _ := os.Getwd()
+
 	// Build request (Code Assist API format)
 	req := &api.GenerateRequest{
 		Model:        model,
@@ -224,12 +238,123 @@ func run(cmd *cobra.Command, args []string) error {
 			Config: api.GenerationConfig{
 				Temperature:     1.0,
 				TopP:            0.95,
-				MaxOutputTokens: 8192,
+				MaxOutputTokens: 65536,
 			},
 		},
 	}
 
-	// Execute based on output format
+	// --- Agent mode ---
+	if !noAgent {
+		// Create web search callback
+		webSearchFn := func(ctx context.Context, query string) (string, []tools.WebSource, error) {
+			resp, err := apiClient.WebSearch(ctx, projectID, model, query)
+			if err != nil {
+				return "", nil, err
+			}
+			// Extract text from response
+			var text string
+			var sources []tools.WebSource
+			if len(resp.Response.Candidates) > 0 {
+				cand := resp.Response.Candidates[0]
+				for _, part := range cand.Content.Parts {
+					text += part.Text
+				}
+				// Extract grounding sources
+				if cand.GroundingMetadata != nil {
+					for _, chunk := range cand.GroundingMetadata.GroundingChunks {
+						if chunk.Web != nil {
+							sources = append(sources, tools.WebSource{
+								Title: chunk.Web.Title,
+								URI:   chunk.Web.URI,
+							})
+						}
+					}
+				}
+			}
+			return text, sources, nil
+		}
+
+		// Create tool registry
+		registry := tools.NewRegistry(tools.RegistryOptions{
+			WorkDir:     workDir,
+			AutoApprove: yolo,
+			Sandbox:     sandbox,
+			Debug:       debug,
+			WebSearch:   webSearchFn,
+		})
+
+		// Initialize MCP clients and register tools
+		mcpClients := make(agent.MCPClients)
+		var mcpDecls []api.FunctionDecl
+
+		if cfg != nil {
+			for serverName, serverCfg := range cfg.MCPServers {
+				if serverCfg.Command == "" {
+					continue // Skip HTTP/SSE (not yet supported)
+				}
+				client, err := mcp.NewClient(serverCfg.Command, serverCfg.Args, serverCfg.Env)
+				if err != nil {
+					if debug {
+						fmt.Fprintf(os.Stderr, "[mcp] failed to create client for %s: %v\n", serverName, err)
+					}
+					continue
+				}
+				if err := client.Initialize(ctx); err != nil {
+					if debug {
+						fmt.Fprintf(os.Stderr, "[mcp] failed to initialize %s: %v\n", serverName, err)
+					}
+					client.Close()
+					continue
+				}
+				mcpClients[serverName] = client
+				defer client.Close()
+
+				for _, tool := range client.Tools {
+					prefixedName := serverName + "__" + tool.Name
+					registry.RegisterMCPTool(serverName, prefixedName)
+					mcpDecls = append(mcpDecls, api.FunctionDecl{
+						Name:        prefixedName,
+						Description: tool.Description,
+						Parameters:  json.RawMessage(tool.InputSchema),
+					})
+					if debug {
+						fmt.Fprintf(os.Stderr, "[mcp] registered tool: %s\n", prefixedName)
+					}
+				}
+			}
+		}
+
+		// Set system instruction
+		req.Request.SystemInstruction = prompt.BuildSystemInstruction(prompt.Options{
+			WorkDir: workDir,
+		})
+
+		// Set tools
+		allDecls := registry.AllDeclarations()
+		allDecls = append(allDecls, mcpDecls...)
+		req.Request.Tools = []api.Tool{{FunctionDeclarations: allDecls}}
+
+		if debug {
+			fmt.Fprintf(os.Stderr, "[agent] %d built-in tools, %d MCP tools registered\n",
+				len(registry.AllDeclarations()), len(mcpDecls))
+		}
+
+		// Run agent loop
+		streaming := outputFormat != "json"
+		loop := agent.NewLoop(apiClient, registry, mcpClients, formatter, agent.Config{
+			MaxTurns:  maxTurns,
+			Streaming: streaming,
+			Debug:     debug,
+		})
+
+		if err := loop.Run(ctx, req); err != nil {
+			formatter.WriteError(err)
+			return err
+		}
+		return nil
+	}
+
+	// --- Legacy single-turn mode (--no-agent) ---
 	switch outputFormat {
 	case "json":
 		return runNonStreaming(ctx, apiClient, req, formatter)
