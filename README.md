@@ -51,11 +51,6 @@ gemini  # Choose "Login with Google"
 
 g reuses these credentials automatically from `~/.gemini/`. Your free tier quota or Workspace Code Assist quota applies.
 
-### Homebrew
-
-```bash
-brew install k-sub1995/tap/g
-```
 
 ### Go
 
