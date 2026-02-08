@@ -9,7 +9,6 @@ builds:
       - CGO_ENABLED=0
     goos:
       - linux
-      - darwin
       - windows
     goarch:
       - amd64
@@ -39,14 +38,3 @@ changelog:
       - '^test:'
       - '^ci:'
 
-brews:
-  - repository:
-      owner: k-sub1995
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/k-sub1995/g"
-    description: "A lightweight, non-interactive Gemini CLI written in Go (g)"
-    license: "Apache-2.0"
-    test: |
-      system "#{bin}/g", "--version"
